@@ -1,0 +1,35 @@
+name: Yet Another OAuth endpoint
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Login to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Auth
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        platforms: linux/amd64
+        cache-from: type=registry,ref=ghcr.io/sverdlovsky/yaoae:cache
+        cache-to: type=registry,ref=ghcr.io/sverdlovsky/yaoae:cache,mode=max
+        tags: |
+          ghcr.io/sverdlovsky/yaoae:latest
+

@@ -1,0 +1,7 @@
+fastapi[standard]
+psycopg[binary]
+itsdangerous
+starlette
+authlib
+PyJWT
+
