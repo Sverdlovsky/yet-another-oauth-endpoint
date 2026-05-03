@@ -14,7 +14,8 @@ config = Config()
 
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=config('SECRET_KEY'))
-config('JWT_SECRET')
+JWT_SECRET = config('JWT_SECRET')
+DOMAIN = config('DOMAIN')
 
 oauth = OAuth(config)
 
@@ -59,13 +60,19 @@ if GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET:
 
 
 @app.get('/with/{provider}')
-async def login(request: Request, provider: str, next: str = f'https://{config('DOMAIN')}/'):
+async def login(request: Request, provider: str, next: str = f'https://{DOMAIN}/'):
+    canonical_host = f"auth.{DOMAIN}"
+    current_host = request.headers.get("host")
+    if current_host != canonical_host:
+        url = request.url.replace(netloc=canonical_host)
+        return RedirectResponse(url, status_code=302)
+
     client = oauth.create_client(provider)
     if not client:
         raise HTTPException(status_code=404, detail='Unknown provider')
 
     request.session['next'] = next
-    redirect_uri = f'https://auth.{config('DOMAIN')}/with/{provider}/callback'
+    redirect_uri = f'https://auth.{DOMAIN}/with/{provider}/callback'
     return await client.authorize_redirect(request, redirect_uri)
 
 
@@ -105,16 +112,16 @@ async def auth(request: Request, provider: str):
                     'ON CONFLICT DO NOTHING'
                 ), ( payload['sub'], payload['name'] ))
 
-    jwt_token = jwt.encode(payload, config('JWT_SECRET'), algorithm='HS256')
+    jwt_token = jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
-    next_url = request.session.pop('next', f'https://{config('DOMAIN')}/')
+    next_url = request.session.pop('next', f'https://{DOMAIN}/')
 
     response = RedirectResponse(url=next_url)
     response.set_cookie(
         key='access_token',
         value=jwt_token,
         httponly=True,
-        domain='.' + config('DOMAIN'),
+        domain='.' + DOMAIN,
         secure=True,
         samesite="none"
     )
