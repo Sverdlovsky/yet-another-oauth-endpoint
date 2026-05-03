@@ -5,7 +5,6 @@ from fastapi import FastAPI, Request, HTTPException
 from starlette.responses import Response
 from starlette.config import Config
 import jwt, json, datetime, os
-import psycopg
 
 
 JWT_EXP = datetime.timedelta(hours=12)
@@ -101,16 +100,6 @@ async def auth(request: Request, provider: str):
         'name': user_info.get('name', ''),
         'exp': datetime.datetime.utcnow() + JWT_EXP
     }
-
-    DSN = config("DATABASE_URL", default=None)
-    if DSN:
-        with psycopg.connect(DSN) as conn:
-            with conn.cursor() as cur:
-                cur.execute((
-                    'INSERT INTO users (email, name) '
-                    'VALUES (%s, %s) '
-                    'ON CONFLICT DO NOTHING'
-                ), ( payload['sub'], payload['name'] ))
 
     jwt_token = jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
