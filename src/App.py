@@ -65,7 +65,7 @@ async def login(request: Request, provider: str, next: str = f'https://{config('
         raise HTTPException(status_code=404, detail='Unknown provider')
 
     request.session['next'] = next
-    redirect_uri = request.url_for('auth', provider=provider)
+    redirect_uri = f'https://auth.{config('DOMAIN')}/with/{provider}'
     return await client.authorize_redirect(request, redirect_uri)
 
 
