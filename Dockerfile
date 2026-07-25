@@ -13,5 +13,10 @@ USER user
 
 EXPOSE 8008
 
-ENTRYPOINT [ "fastapi", "run", "/app/src/App.py", "--port", "8008", "--proxy-headers", "--forwarded-allow-ips", "*" ]
+ENTRYPOINT ["fastapi", "run", "/app/src/App.py"]
+CMD [
+  "--host", "0.0.0.0",
+  "--port", "8080",
+  "--forwarded-allow-ips", "*"
+]
 
