@@ -1,22 +1,23 @@
-FROM docker.io/library/python:3.12.6-alpine3.19
+FROM golang:alpine AS build
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-COPY src src
+COPY go.sum .
+COPY go.mod .
 
-RUN addgroup -g 31541 user
-RUN adduser -DH -u 31541 -G user user
-RUN chown -R user:user .
-USER user
+RUN go mod download
 
-EXPOSE 8008
+COPY cmd cmd
 
-ENTRYPOINT ["fastapi", "run", "/app/src/App.py"]
-CMD [
-  "--host", "0.0.0.0",
-  "--port", "8080",
-  "--forwarded-allow-ips", "*"
-]
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o yaoae ./cmd
+
+
+FROM scratch
+
+COPY --from=build /app/yaoae /yaoae
+
+EXPOSE 8080
+
+ENTRYPOINT ["/yaoae"]
 
