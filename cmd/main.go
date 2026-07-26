@@ -38,6 +38,7 @@ func main() {
 	mux.HandleFunc("GET /with/{provider}", handleLogin)
 	mux.HandleFunc("GET /with/{provider}/callback", handleCallback)
 
+	log.Println("Server started and listening on 8080")
 	if err := http.ListenAndServe(":8080", mux); err != nil {
 		log.Fatal(err)
 	}
@@ -109,6 +110,7 @@ func handleCallback(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	token, err := pc.oauth2Config.Exchange(ctx, code)
 	if err != nil {
+		log.Printf("token exchange failed for provider=%s: %v", provider, err)
 		http.Error(w, "token exchange failed", http.StatusBadGateway)
 		return
 	}

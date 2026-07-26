@@ -17,6 +17,8 @@ FROM scratch
 
 COPY --from=build /app/yaoae /yaoae
 
+USER 10001:10001
+
 EXPOSE 8080
 
 ENTRYPOINT ["/yaoae"]
