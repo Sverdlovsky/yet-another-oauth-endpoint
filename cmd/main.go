@@ -44,7 +44,7 @@ func main() {
 	redisHost := os.Getenv("REDIS_HOST")
 	redisPort := os.Getenv("REDIS_PORT")
 	if redisPort == "" {
-		smtpPort = "6379"
+		redisPort = "6379"
 	}
 
 	smtpHost := os.Getenv("SMTP_HOST")
