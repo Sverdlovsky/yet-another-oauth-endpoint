@@ -41,7 +41,11 @@ func main() {
 	yandexClientID := os.Getenv("YANDEX_CLIENT_ID")
 	yandexClientSecret := os.Getenv("YANDEX_CLIENT_SECRET")
 
-	redisAddr := os.Getenv("REDIS_ADDR")
+	redisHost := os.Getenv("REDIS_HOST")
+	redisPort := os.Getenv("REDIS_PORT")
+	if redisPort == "" {
+		smtpPort = "6379"
+	}
 
 	smtpHost := os.Getenv("SMTP_HOST")
 	smtpPort := os.Getenv("SMTP_PORT")
@@ -71,8 +75,8 @@ func main() {
 	}
 
 	var rdb *redis.Client
-	if redisAddr != "" {
-		rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+	if redisHost != "" {
+		rdb = redis.NewClient(&redis.Options{Addr: redisHost+":"+redisPort})
 	}
 
 	if registerEmail(mux, a, rdb, smtpHost, smtpPort, smtpFrom) {
