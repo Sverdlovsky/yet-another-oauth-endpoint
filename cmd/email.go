@@ -178,5 +178,31 @@ func (m *smtpMailer) sendMagicLink(to, link string) error {
 		m.from, to, subject, body,
 	)
 
-	return smtp.SendMail(addr, nil, m.from, []string{to}, []byte(msg))
+	client, err := smtp.Dial(addr)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer client.Close()
+
+	if err := client.Mail(m.from); err != nil {
+		return fmt.Errorf("MAIL FROM: %w", err)
+	}
+	if err := client.Rcpt(to); err != nil {
+		return fmt.Errorf("RCPT TO: %w", err)
+	}
+
+	wc, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("DATA: %w", err)
+	}
+	if _, err := wc.Write([]byte(msg)); err != nil {
+		wc.Close()
+		return fmt.Errorf("write body: %w", err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("close body: %w", err)
+	}
+
+	return client.Quit()
 }
+
