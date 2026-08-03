@@ -4,28 +4,119 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"log"
 	"net/http"
-	"net/url"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/sessions"
+	"github.com/redis/go-redis/v9"
 )
 
 const sessionName = "session"
 
-var (
-	cfg       *Config
-	providers map[string]*providerConfig
-	store     *sessions.CookieStore
-)
+type app struct {
+	domain       string
+	jwtSecret    []byte
+	sessionStore *sessions.CookieStore
+}
 
 func main() {
-	cfg = loadConfig()
-	providers = buildProviders(cfg)
-	store = sessions.NewCookieStore([]byte(cfg.SecretKey))
+	domain := mustEnv("DOMAIN")
+	secretKey := mustEnv("SECRET_KEY")
+	jwtSecret := mustEnv("JWT_SECRET")
 
+	listenAddr := os.Getenv("LISTEN_ADDR")
+	if listenAddr == "" {
+		listenAddr = ":8080"
+	}
+
+	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+
+	yandexClientID := os.Getenv("YANDEX_CLIENT_ID")
+	yandexClientSecret := os.Getenv("YANDEX_CLIENT_SECRET")
+
+	redisAddr := os.Getenv("REDIS_ADDR")
+
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpPort := os.Getenv("SMTP_PORT")
+	if smtpPort == "" {
+		smtpPort = "25"
+	}
+	smtpFrom := os.Getenv("SMTP_FROM")
+
+	a := &app{
+		domain:       domain,
+		jwtSecret:    []byte(jwtSecret),
+		sessionStore: newSessionStore(secretKey),
+	}
+
+	mux := http.NewServeMux()
+
+	if registerGoogle(mux, a, googleClientID, googleClientSecret) {
+		log.Println("provider enabled: google")
+	} else {
+		log.Println("provider disabled: google (GOOGLE_CLIENT_ID/SECRET not set)")
+	}
+
+	if registerYandex(mux, a, yandexClientID, yandexClientSecret) {
+		log.Println("provider enabled: yandex")
+	} else {
+		log.Println("provider disabled: yandex (YANDEX_CLIENT_ID/SECRET not set)")
+	}
+
+	var rdb *redis.Client
+	if redisAddr != "" {
+		rdb = redis.NewClient(&redis.Options{Addr: redisAddr})
+	}
+
+	if registerEmail(mux, a, rdb, smtpHost, smtpPort, smtpFrom) {
+		log.Println("provider enabled: email")
+	} else {
+		log.Println("provider disabled: email (REDIS_ADDR/SMTP_HOST/SMTP_FROM not set)")
+	}
+
+	srv := &http.Server{
+		Addr:         listenAddr,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	go func() {
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+		<-stop
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("graceful shutdown failed: %v", err)
+		}
+	}()
+
+	log.Printf("listening on %s", listenAddr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+func mustEnv(name string) string {
+	v := os.Getenv(name)
+	if v == "" {
+		log.Fatalf("missing required env var: %s", name)
+	}
+	return v
+}
+
+func newSessionStore(secretKey string) *sessions.CookieStore {
+	store := sessions.NewCookieStore([]byte(secretKey))
 	store.Options = &sessions.Options{
 		Path:     "/",
 		MaxAge:   int((30 * time.Minute).Seconds()),
@@ -33,132 +124,53 @@ func main() {
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /with/{provider}", handleLogin)
-	mux.HandleFunc("GET /with/{provider}/callback", handleCallback)
-
-	log.Println("Server started and listening on 8080")
-	if err := http.ListenAndServe(":8080", mux); err != nil {
-		log.Fatal(err)
-	}
+	return store
 }
 
-func handleLogin(w http.ResponseWriter, r *http.Request) {
-	canonicalHost := "auth." + cfg.Domain
-	if r.Host != canonicalHost {
-		target := *r.URL
-		target.Scheme = "https"
-		target.Host = canonicalHost
-		http.Redirect(w, r, target.String(), http.StatusFound)
-		return
+func (a *app) canonicalRedirect(w http.ResponseWriter, r *http.Request) bool {
+	canonicalHost := "auth." + a.domain
+	if r.Host == canonicalHost {
+		return false
 	}
-
-	provider := r.PathValue("provider")
-	pc, ok := providers[provider]
-	if !ok {
-		http.Error(w, "Unknown provider", http.StatusNotFound)
-		return
-	}
-
-	next := r.URL.Query().Get("next")
-	if next == "" {
-		next = "https://" + cfg.Domain + "/"
-	}
-
-	state, err := randomState()
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	sess, _ := store.Get(r, sessionName)
-	sess.Values["state"] = state
-	sess.Values["next"] = next
-	if err := sess.Save(r, w); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	authURL := pc.oauth2Config.AuthCodeURL(state)
-	http.Redirect(w, r, authURL, http.StatusFound)
+	target := *r.URL
+	target.Scheme = "https"
+	target.Host = canonicalHost
+	http.Redirect(w, r, target.String(), http.StatusFound)
+	return true
 }
 
-func handleCallback(w http.ResponseWriter, r *http.Request) {
-	provider := r.PathValue("provider")
-	pc, ok := providers[provider]
-	if !ok {
-		http.Error(w, "Unknown provider", http.StatusNotFound)
-		return
-	}
-
-	sess, _ := store.Get(r, sessionName)
-
-	wantState, _ := sess.Values["state"].(string)
-	gotState := r.URL.Query().Get("state")
-	if wantState == "" || gotState == "" || gotState != wantState {
-		http.Error(w, "invalid oauth state", http.StatusBadRequest)
-		return
-	}
-
-	code := r.URL.Query().Get("code")
-	if code == "" {
-		http.Error(w, "missing code", http.StatusBadRequest)
-		return
-	}
-
-	ctx := context.Background()
-	token, err := pc.oauth2Config.Exchange(ctx, code)
-	if err != nil {
-		log.Printf("token exchange failed for provider=%s: %v", provider, err)
-		http.Error(w, "token exchange failed", http.StatusBadGateway)
-		return
-	}
-
-	userInfo, err := pc.fetchUser(ctx, pc.oauth2Config, token)
-	if err != nil || userInfo.Sub == "" {
-		http.Error(w, "failed to fetch user info", http.StatusBadGateway)
-		return
-	}
-
-	claims := jwt.MapClaims{
-		"sub": userInfo.Sub,
-		"name": userInfo.Name,
-		"exp": time.Now().Add(jwtExpiration).Unix(),
-	}
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := jwtToken.SignedString(cfg.JWTSecret)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
+func (a *app) popNext(sess *sessions.Session) string {
 	next, _ := sess.Values["next"].(string)
 	if next == "" {
-		next = "https://" + cfg.Domain + "/"
+		next = "https://" + a.domain + "/"
 	}
 	delete(sess.Values, "next")
 	delete(sess.Values, "state")
-	if err := sess.Save(r, w); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	return next
+}
+
+func (a *app) issueSessionCookie(w http.ResponseWriter, sub, name string) error {
+	claims := jwt.MapClaims{
+		"sub":  sub,
+		"name": name,
+		"exp":  time.Now().Add(12 * time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(a.jwtSecret)
+	if err != nil {
+		return err
 	}
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "access_token",
 		Value:    signed,
-		Domain:   "." + cfg.Domain,
+		Domain:   "." + a.domain,
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteNoneMode,
 	})
-
-	if u, err := url.Parse(next); err == nil {
-		http.Redirect(w, r, u.String(), http.StatusFound)
-		return
-	}
-	http.Redirect(w, r, "https://"+cfg.Domain+"/", http.StatusFound)
+	return nil
 }
 
 func randomState() (string, error) {

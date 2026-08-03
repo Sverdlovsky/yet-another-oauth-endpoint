@@ -1,4 +1,4 @@
-name: Yet Another OAuth endpoint
+name: Yet Another OAuth Endpoint
 
 on:
   push:
